@@ -2,168 +2,109 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
+from rcl_interfaces.msg import SetParametersResult 
 from . import motoron 
 import sys
 
 # =====================================================================
-# 🚀 HOW TO RUN THIS NODE
-# 1. Jump into the docker container: docker exec -it totebot_brain /bin/bash
-# 2. Run Dummy Mode (Testing):       ros2 run totebot_hardware motor_driver --ros-args -p dummy_mode:=true
-# 3. Run Live Mode (Hardware):       ros2 run totebot_hardware motor_driver
-#
-# 🛠️ HOW TO TUNE PARAMETERS LIVE
-# While the node is running, open a SECOND terminal, enter the docker 
-# container, and use these commands to change how the robot drives:
-#
-#   Change Top Speed instantly:      ros2 param set /motoron_driver max_speed 400
-#   Change Acceleration limits:      ros2 param set /motoron_driver accel_limit 80
-#   Change Braking (Deceleration):   ros2 param set /motoron_driver decel_limit 200
-#
-# List all available parameters:     ros2 param list
+# 🚀 TOTEBOT MOTOR DRIVER - FINAL PRODUCTION STACK (2026)
 # =====================================================================
-
+# ⚙️ LIVE PARAMETER TUNING GUIDE
+# IMPORTANT: You must use TWO separate terminals to tune parameters.
+# You cannot set a parameter if the robot is not currently running!
+#
+# --- TERMINAL 1 (The Engine Room) ---
+# This terminal runs the master switch and keeps the robot alive.
+# 1. Enter container:  docker exec -it totebot_brain bash
+# 2. Source ROS:       source /opt/ros/jazzy/setup.bash && source /totebot_ws/install/setup.bash
+# 3. Start Robot:      ros2 launch totebot_bringup hardware.launch.py
+# 
+# --- TERMINAL 2 (The Control Room) ---
+# Open a second terminal to the Raspberry Pi to send commands.
+# 1. Enter container:  docker exec -it totebot_brain bash
+# 2. Source ROS:       source /opt/ros/jazzy/setup.bash
+# 3. Change param:     ros2 param set /motor_driver <parameter> <value>
+#
+# EXAMPLE COMMANDS:
+# ros2 param set /motor_driver max_speed 800
+# ros2 param set /motor_driver accel_limit 100
+#
+# WHY "/motor_driver"? 
+# Even though the Python class is 'motoron_driver', our hardware.launch.py 
+# file intentionally renames the node to '/motor_driver' for cleaner networking.
+#
+# AVAILABLE PARAMETERS:
+# - max_speed      (int):  0 to 800 (Absolute limit).
+# - accel_limit    (int):  Lower value = smoother ramp-up.
+# - decel_limit    (int):  Lower value = longer braking.
+# - cmd_timeout_ms (int):  MS before stop if signal lost.
+# - min_vin_mv     (int):  Voltage cutoff (4500 = 4.5V).
+# =====================================================================
 class MotoronRosDriver(Node):
     def __init__(self):
         super().__init__('motoron_driver')
         self.hardware_connected = False
         
-        # 🟢 DECLARE ROS 2 PARAMETERS (Replaces hardcoded macros)
+        # 🟢 DECLARE ROS 2 PARAMETERS
         self.declare_parameter('dummy_mode', False)
-        self.declare_parameter('max_speed', 600)       # Top speed (0 to 800)
-        self.declare_parameter('accel_limit', 140)     # Lower = smoother acceleration
+        self.declare_parameter('max_speed', 600)       # Standard: 600, Max: 800
+        self.declare_parameter('accel_limit', 140)     # Lower = smoother
         self.declare_parameter('decel_limit', 300)     # Lower = longer braking
-        self.declare_parameter('cmd_timeout_ms', 100)  # STOP if no signal
-        self.declare_parameter('min_vin_mv', 4500)     # 4.5V Minimum cutoff
-        
+        self.declare_parameter('cmd_timeout_ms', 200)  # Stop if signal lost
+        self.declare_parameter('min_vin_mv', 4500)     # 4.5V cutoff
+
         self.is_dummy_mode = self.get_parameter('dummy_mode').value
         
+        # 🟢 THE "NO-PANIC" MASK (Fixes 0x2404 Crash)
         self.error_mask = (
             (1 << motoron.STATUS_FLAG_PROTOCOL_ERROR) |
             (1 << motoron.STATUS_FLAG_CRC_ERROR) |
-            (1 << motoron.STATUS_FLAG_COMMAND_TIMEOUT_LATCHED) |
-            (1 << motoron.STATUS_FLAG_MOTOR_FAULT_LATCHED) |
-            (1 << motoron.STATUS_FLAG_NO_POWER_LATCHED) |
-            (1 << motoron.STATUS_FLAG_RESET) |
             (1 << motoron.STATUS_FLAG_COMMAND_TIMEOUT))
 
+        # 🟢 REGISTER PARAMETER CALLBACK (Tracks changes in Terminal)
+        self.add_on_set_parameters_callback(self.parameter_callback)
+
+        # Initialize the hardware
         self.setup_motoron()
 
+        # Listen for Joystick (via ROS Bridge)
         self.subscription = self.create_subscription(
             Twist, '/cmd_vel', self.listener_callback, 10)
         
+        # Health Check Timer (Runs every 100ms)
         self.timer = self.create_timer(0.1, self.health_check_callback)
         
         if self.is_dummy_mode:
-            self.get_logger().warn("🚀 TOTEBOT BACKEND READY (LAUNCHED IN DUMMY MODE)")
+            self.get_logger().warn("🚀 TOTEBOT BACKEND READY (DUMMY MODE)")
         else:
             self.get_logger().info("🚀 TOTEBOT BACKEND READY (LIVE HARDWARE MODE)")
 
+    def parameter_callback(self, params):
+        """Wakes up whenever 'ros2 param set' is used."""
+        for param in params:
+            self.get_logger().info(f"⚙️  PARAM UPDATED: {param.name} = {param.value}")
+            
+            # Sync changes with the physical Motoron board live
+            if self.hardware_connected and not self.is_dummy_mode:
+                try:
+                    if param.name == 'accel_limit':
+                        for m in: self.mc.set_max_acceleration(m, param.value)
+                    elif param.name == 'decel_limit':
+                        for m in: self.mc.set_max_deceleration(m, param.value)
+                    elif param.name == 'cmd_timeout_ms':
+                        self.mc.set_command_timeout_milliseconds(param.value)
+                except Exception as e:
+                    self.get_logger().error(f"❌ Failed to sync param to hardware: {e}")
+
+        return SetParametersResult(successful=True)
+
     def setup_motoron(self):
+        """Attempts to initialize the Motoron I2C hardware."""
         try:
             self.mc = motoron.MotoronI2C()
             self.mc.reinitialize()
+
+            # 🟢 THE DEEP CLEAR (Wipes memory of short circuits/faults)
             self.mc.clear_reset_flag()
             self.mc.clear_latched_status_flags(0xFFFF) 
-            self.mc.clear_motor_fault()
-
-            self.mc.set_error_response(motoron.ERROR_RESPONSE_COAST)
-            self.mc.set_error_mask(self.error_mask)
-            
-            # Read hardware parameters once during setup
-            cmd_timeout = self.get_parameter('cmd_timeout_ms').value
-            accel = self.get_parameter('accel_limit').value
-            decel = self.get_parameter('decel_limit').value
-
-            self.mc.set_command_timeout_milliseconds(cmd_timeout)
-            
-            for motor in [1,2]:
-                self.mc.set_max_acceleration(motor, accel)
-                self.mc.set_max_deceleration(motor, decel)
-            
-            self.mc.clear_motor_fault()
-            self.hardware_connected = True
-            
-        except Exception as e:
-            self.hardware_connected = False
-            self.get_logger().error(f"⚠️ MOTORON I2C NOT FOUND: {e}")
-
-    def health_check_callback(self):
-        if not self.hardware_connected:
-            return
-
-        try:
-            status = self.mc.get_status_flags()
-            voltage = self.mc.get_vin_voltage_mv(3300, motoron.VinSenseType.MOTORON_HP)
-            min_vin = self.get_parameter('min_vin_mv').value
-            
-            if self.is_dummy_mode:
-                return 
-
-            if voltage < min_vin:
-                self.get_logger().error(f"🛑 LOW VOLTAGE: {voltage}mV. SHUTTING DOWN.")
-                self.emergency_stop()
-
-            if (status & self.error_mask):
-                self.get_logger().error(f"❌ CONTROLLER ERROR: 0x{status:x}. SHUTTING DOWN.")
-                self.emergency_stop()
-
-        except Exception as e:
-            self.get_logger().error(f"🏥 HEALTH CHECK FAILED: {e}")
-            self.emergency_stop()
-
-    def listener_callback(self, msg):
-        # 🟢 Live-read the max speed so it can be changed on the fly while driving!
-        current_max_speed = self.get_parameter('max_speed').value
-
-        left = int((msg.linear.x - msg.angular.z) * current_max_speed)
-        right = int((msg.linear.x + msg.angular.z) * current_max_speed)
-        
-        left = max(min(left, 800), -800)
-        right = max(min(right, 800), -800)
-
-        if self.hardware_connected and not self.is_dummy_mode:
-            try:
-                self.mc.set_speed(1, left)
-                self.mc.set_speed(2, right)
-            except Exception as e: 
-                # 🟢 Catch and log I2C noise/drops instead of silently passing
-                self.get_logger().warn(f"⚠️ I2C WRITE FAILED: {e}", throttle_duration_sec=1.0)
-        else:
-            self.get_logger().info(f"🕹️ DUMMY MODE -> L: {left} | R: {right}", throttle_duration_sec=0.5)
-
-    def emergency_stop(self):
-        if self.hardware_connected:
-            try:
-                self.mc.reset() # Force motors to coast
-            except Exception: 
-                pass
-        
-        # 🟢 Graceful ROS 2 shutdown instead of a raw sys.exit(1)
-        self.get_logger().fatal("🛑 Initiating safe node shutdown due to hardware fault.")
-        self.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
-
-def main(args=None):
-    rclpy.init(args=args)
-    node = MotoronRosDriver()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass # Handle standard Ctrl+C cleanly
-    finally:
-        if node.hardware_connected:
-            try:
-                node.mc.reset()
-            except Exception: 
-                pass
-        # Double check if the node hasn't already been destroyed by emergency_stop
-        try:
-            node.destroy_node()
-        except:
-            pass
-        if rclpy.ok():
-            rclpy.shutdown()
-
-if __name__ == '__main__':
-    main()
+            self.

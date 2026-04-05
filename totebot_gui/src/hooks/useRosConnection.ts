@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { rosService } from '../services/rosService';
 
-export const useRos = (url: string) => {
+export const useRosConnection = (url: string) => {
   const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
@@ -11,14 +11,10 @@ export const useRos = (url: string) => {
       () => setIsConnected(false)
     );
     
-    // Cleanup when the user completely closes the app
+    // When the whole app closes, disconnect cleanly
     return () => rosService.disconnect(); 
   }, [url]);
 
-  return {
-    isConnected,
-    // Just update the memory. The background loop handles the rest!
-    move: (x: number, y: number) => rosService.setVelocity(y, x), 
-    stop: () => rosService.setVelocity(0, 0)
-  };
+  // It only returns the connection status, nothing else!
+  return { isConnected };
 };

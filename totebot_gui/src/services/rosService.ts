@@ -1,12 +1,17 @@
 import { Ros, Topic } from 'roslib';
 
+// Define the shape of the message for better TypeScript support
+interface TwistMessage {
+  linear: { x: number; y: number; z: number };
+  angular: { x: number; y: number; z: number };
+}
+
 class RosService {
-  private ros: Ros | null = null;
-  private cmdVel: Topic | null = null;
+  public ros: Ros | null = null;
   
-  // --- MEMORY & HEARTBEAT VARIABLES ---
-  private currentLinear: number = 0;
-  private currentAngular: number = 0;
+  private cmdVel: Topic | null = null;
+  private currentLinear = 0;
+  private currentAngular = 0;
   private publishTimer: ReturnType<typeof setInterval> | null = null;
   private readonly PUBLISH_RATE_MS = 50; 
 
@@ -16,23 +21,21 @@ class RosService {
     this.ros = new Ros({ url });
 
     this.ros.on('connection', () => {
-      console.log('? Connected to ToteBot Bridge');
+      console.log('✅ Connected to ToteBot');
       this.initTopics();
       this.startPublishLoop();
       onConnect();
     });
 
-    this.ros.on('error', (error) => {
-      console.error('? ROS Bridge Error:', error);
+    // Unified cleanup for errors/closing
+    const handleFailure = () => {
       this.stopPublishLoop();
+      this.resetVelocity(); // Reset memory so robot doesn't "jump" on reconnect
       onError();
-    });
+    };
 
-    this.ros.on('close', () => {
-      console.log('?? Connection to ToteBot Closed');
-      this.stopPublishLoop();
-      onError();
-    });
+    this.ros.on('error', (err) => { console.error('❌ ROS Error:', err); handleFailure(); });
+    this.ros.on('close', () => { console.log('⚠️ Connection Closed'); handleFailure(); });
   }
 
   private initTopics() {
@@ -48,22 +51,24 @@ class RosService {
     this.currentLinear = linearX;
     this.currentAngular = angularZ;
   }
-  
-private startPublishLoop() {
-    if (this.publishTimer) clearInterval(this.publishTimer);
+
+  private resetVelocity() {
+    this.currentLinear = 0;
+    this.currentAngular = 0;
+  }
+
+  private startPublishLoop() {
+    this.stopPublishLoop();
     
     this.publishTimer = setInterval(() => {
       if (!this.cmdVel) return;
 
-      // 1. Just create a plain object instead of a new Message()
-      const twist = {
+      const twist: TwistMessage = {
         linear: { x: this.currentLinear, y: 0, z: 0 },
-        angular: { x: 0, y: 0, z: -this.currentAngular }
+        angular: { x: 0, y: 0, z: -this.currentAngular } 
       };
 
-      // 2. Use "as any" to force TypeScript to accept it
-      this.cmdVel.publish(twist as any);
-      
+      this.cmdVel.publish(twist);
     }, this.PUBLISH_RATE_MS);
   }
 

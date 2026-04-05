@@ -1,40 +1,33 @@
 import { useState, useCallback } from 'react';
 import CameraFeed from '@/components/CameraFeed';
-import TelemetryPanel from '@/components/TelemetryPanel';
-import SafetyControls from '@/components/SafetyControls';
+import MissionControls from '@/components/MissionControls';
+import MechanismControls from '@/components/MechanismControls';
 import VirtualJoystick from '@/components/VirtualJoystick';
 import { Bot } from 'lucide-react';
-import { useRos } from '@/hooks/useRos'; 
+
+// 🟢 IMPORT BOTH OF YOUR NEW HOOKS
+import { useRosConnection } from '@/hooks/useRosConnection'; 
+import { useMotors } from '@/hooks/useMotors'; 
 
 const Index = () => {
-  const [mode, setMode] = useState<'Manual' | 'Autonomous'>('Manual');
-  const [estopActive, setEstopActive] = useState(false);
+  const [estopActive] = useState(false);
 
-const { isConnected, move, stop } = useRos(`ws://${window.location.hostname}:9909`);
-
-  const toggleMode = useCallback(() => {
-    setMode(m => m === 'Manual' ? 'Autonomous' : 'Manual');
-  }, []);
+  // 1. THE NERVOUS SYSTEM: Connect to the Pi
+  const { isConnected } = useRosConnection(`ws://${window.location.hostname}:9909`);
+  
+  // 2. THE MUSCLES: Get the drive commands
+  const { move, stop } = useMotors();
 
   // --- LIVE HARDWARE CONTROL ---
   const handleJoystickMove = useCallback((x: number, y: number) => {
-    if (estopActive) return; // Block movement if E-Stop is active
-    move(x, y);              // Send speed directly to the Raspberry Pi memory
+    if (estopActive) return; 
+    move(x, y);              
   }, [estopActive, move]);
-
-  const handleEStop = useCallback(() => {
-    console.log('?? EMERGENCY STOP TRIGGERED');
-    setEstopActive(true);
-    stop(); // Send 0 speed immediately to lock motors
-    
-    // Auto-reset UI after 1.5s, but hardware stays safe
-    setTimeout(() => setEstopActive(false), 1500);
-  }, [stop]);
 
   return (
     <div className={`h-screen w-screen overflow-hidden bg-background p-3 flex flex-col gap-3 transition-all duration-300 ${estopActive ? 'border-4 border-red-600' : ''}`}>
       
-      {/* Header bar (Dynamic Status Lights) */}
+      {/* Header bar */}
       <header className="flex items-center justify-between px-4 py-2 rounded-xl bg-surface-panel border border-border shrink-0">
         <div className="flex items-center gap-3">
           <Bot size={20} className={isConnected ? "text-hud-green" : "text-red-500"} />
@@ -51,24 +44,24 @@ const { isConnected, move, stop } = useRos(`ws://${window.location.hostname}:990
         </div>
       </header>
 
-      {/* Main content - Fully Responsive (Mobile + Landscape + PC) */}
+      {/* Main content */}
       <div className="flex-1 flex flex-col landscape:flex-row sm:flex-row gap-3 min-h-0 overflow-y-auto landscape:overflow-hidden sm:overflow-hidden pb-4 landscape:pb-0 sm:pb-0">
         
-        {/* Left: Observation Zone (65% width on desktop/landscape) */}
+        {/* Left: Observation Zone */}
         <div className="w-full landscape:w-[65%] sm:w-[65%] h-[35vh] landscape:h-auto sm:h-auto min-w-0 flex flex-col">
           <div className="flex-1 min-h-0">
              <CameraFeed />
           </div>
         </div>
 
-        {/* Right: Action Strip (35% width on desktop/landscape) */}
+        {/* Right: Action Strip */}
         <div className="w-full landscape:w-[35%] sm:w-[35%] flex flex-col gap-3 min-w-0 landscape:overflow-y-auto sm:overflow-y-auto pr-1">
-          <TelemetryPanel mode={mode} />
-          <SafetyControls 
-            mode={mode} 
-            onModeToggle={toggleMode} 
-            onEStop={handleEStop} 
-          />
+  
+          {/* Note: Pass isConnected down to MissionControls later when you add the IMU! */}
+          <MissionControls /> 
+          
+          <MechanismControls />
+
           {/* Joystick Container */}
           <div className="flex-1 min-h-[350px] landscape:min-h-[250px] sm:min-h-0 flex flex-col shrink-0">
             <VirtualJoystick onMove={handleJoystickMove} onStop={stop} />
