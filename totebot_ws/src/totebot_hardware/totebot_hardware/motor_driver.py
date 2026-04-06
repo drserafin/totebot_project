@@ -7,39 +7,28 @@ from . import motoron
 import sys
 
 # =====================================================================
-# 🚀 TOTEBOT MOTOR DRIVER - FINAL PRODUCTION STACK (2026)
+# 🚀 TOTEBOT MOTOR DRIVER (motor_driver.py)
 # =====================================================================
-# ⚙️ LIVE PARAMETER TUNING GUIDE
-# IMPORTANT: You must use TWO separate terminals to tune parameters.
-# You cannot set a parameter if the robot is not currently running!
+# 📖 QUICK START: LIVE PARAMETER TUNING
+# You can change robot settings (like max speed) while it is driving!
 #
-# --- TERMINAL 1 (The Engine Room) ---
-# This terminal runs the master switch and keeps the robot alive.
-# 1. Enter container:  docker exec -it totebot_brain bash
-# 2. Source ROS:       source /opt/ros/jazzy/setup.bash && source /totebot_ws/install/setup.bash
-# 3. Start Robot:      ros2 launch totebot_bringup hardware.launch.py
-# 
-# --- TERMINAL 2 (The Control Room) ---
-# Open a second terminal to the Raspberry Pi to send commands.
-# 1. Enter container:  docker exec -it totebot_brain bash
-# 2. Source ROS:       source /opt/ros/jazzy/setup.bash
-# 3. Change param:     ros2 param set /motor_driver <parameter> <value>
+# [STEP 1] Keep your main robot launch terminal running.
+# [STEP 2] Open a NEW terminal and enter the brain:
+#          docker exec -it totebot_brain bash
+# [STEP 3] Source ROS 2:
+#          source /opt/ros/jazzy/setup.bash
+# [STEP 4] Send a new parameter command:
+#          ros2 param set /motor_driver <parameter_name> <value>
 #
-# EXAMPLE COMMANDS:
-# ros2 param set /motor_driver max_speed 800
-# ros2 param set /motor_driver accel_limit 100
+# 🌟 AVAILABLE PARAMETERS:
+# - max_speed      (int): 0 to 800 (Absolute speed limit)
+# - accel_limit    (int): Lower = smoother ramp-up (Default: 140)
+# - decel_limit    (int): Lower = longer braking (Default: 300)
+# - cmd_timeout_ms (int): MS before stop if signal lost (Default: 200)
 #
-# WHY "/motor_driver"? 
-# Even though the Python class is 'motoron_driver', our hardware.launch.py 
-# file intentionally renames the node to '/motor_driver' for cleaner networking.
-#
-# AVAILABLE PARAMETERS:
-# - max_speed      (int):  0 to 800 (Absolute limit).
-# - accel_limit    (int):  Lower value = smoother ramp-up.
-# - decel_limit    (int):  Lower value = longer braking.
-# - cmd_timeout_ms (int):  MS before stop if signal lost.
-# - min_vin_mv     (int):  Voltage cutoff (4500 = 4.5V).
+# Example: ros2 param set /motor_driver max_speed 800
 # =====================================================================
+
 class MotoronRosDriver(Node):
     def __init__(self):
         super().__init__('motoron_driver')
@@ -88,9 +77,9 @@ class MotoronRosDriver(Node):
             if self.hardware_connected and not self.is_dummy_mode:
                 try:
                     if param.name == 'accel_limit':
-                        for m in: self.mc.set_max_acceleration(m, param.value)
+                        for m in [1,2]: self.mc.set_max_acceleration(m, param.value)
                     elif param.name == 'decel_limit':
-                        for m in: self.mc.set_max_deceleration(m, param.value)
+                        for m in [1,2]: self.mc.set_max_deceleration(m, param.value)
                     elif param.name == 'cmd_timeout_ms':
                         self.mc.set_command_timeout_milliseconds(param.value)
                 except Exception as e:
@@ -107,4 +96,92 @@ class MotoronRosDriver(Node):
             # 🟢 THE DEEP CLEAR (Wipes memory of short circuits/faults)
             self.mc.clear_reset_flag()
             self.mc.clear_latched_status_flags(0xFFFF) 
-            self.
+            self.mc.clear_motor_fault()
+
+            # Apply Safety Settings
+            cmd_timeout = self.get_parameter('cmd_timeout_ms').value
+            accel = self.get_parameter('accel_limit').value
+            decel = self.get_parameter('decel_limit').value
+
+            self.mc.set_error_response(motoron.ERROR_RESPONSE_COAST)
+            self.mc.set_error_mask(self.error_mask)
+            self.mc.set_command_timeout_milliseconds(cmd_timeout)
+            
+            for motor in [1, 2]:
+                self.mc.set_max_acceleration(motor, accel)
+                self.mc.set_max_deceleration(motor, decel)
+            
+            self.mc.clear_motor_fault()
+            self.hardware_connected = True
+            
+        except Exception as e:
+            self.hardware_connected = False
+            self.get_logger().error(f"⚠️ MOTORON I2C SETUP FAILED: {e}")
+            self.get_logger().warn("🤖 FALLING BACK TO DUMMY MODE")
+
+    def health_check_callback(self):
+        """Monitors VIN Voltage and Protocol Errors."""
+        if not self.hardware_connected or self.is_dummy_mode:
+            return
+
+        try:
+            status = self.mc.get_status_flags()
+            voltage = self.mc.get_vin_voltage_mv(3300, motoron.VinSenseType.MOTORON_256)
+            min_vin = self.get_parameter('min_vin_mv').value
+            
+            if voltage < min_vin and voltage > 500:
+                self.get_logger().error(f"🛑 LOW VOLTAGE: {voltage}mV. SHUTTING DOWN.")
+                self.emergency_stop()
+
+            if (status & self.error_mask):
+                self.get_logger().error(f"❌ CONTROLLER ERROR: 0x{status:x}. SHUTTING DOWN.")
+                self.emergency_stop()
+
+        except Exception as e:
+            self.get_logger().error(f"🏥 HEALTH CHECK FAILED: {e}")
+            self.emergency_stop()
+
+    def listener_callback(self, msg):
+        """Converts Twist messages to L/R motor speeds."""
+        current_max_speed = self.get_parameter('max_speed').value
+
+        left = int((msg.linear.x - msg.angular.z) * current_max_speed)
+        right = int((msg.linear.x + msg.angular.z) * current_max_speed)
+        
+        left = max(min(left, 800), -800)
+        right = max(min(right, 800), -800)
+
+        if self.hardware_connected and not self.is_dummy_mode:
+            try:
+                self.mc.set_speed(1, left)
+                self.mc.set_speed(2, right)
+            except Exception as e: 
+                self.get_logger().warn(f"⚠️ I2C WRITE FAILED: {e}", throttle_duration_sec=1.0)
+        else:
+            self.get_logger().info(f"🕹️ L: {left} | R: {right}", throttle_duration_sec=0.5)
+
+    def emergency_stop(self):
+        """Kills power and exits."""
+        if self.hardware_connected:
+            try: self.mc.reset()
+            except: pass
+        self.get_logger().fatal("🛑 Safe node shutdown initiated.")
+        self.destroy_node()
+        if rclpy.ok(): rclpy.shutdown()
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = MotoronRosDriver()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass 
+    finally:
+        if node.hardware_connected:
+            try: node.mc.reset()
+            except: pass
+        node.destroy_node()
+        if rclpy.ok(): rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()

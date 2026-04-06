@@ -1,35 +1,42 @@
 import { useState, useEffect } from 'react';
 import { rosService } from '../services/rosService';
 import { Topic } from 'roslib';
+import * as THREE from 'three';
 
-// We pass 'isConnected' as a prop so the hook knows when it's safe to listen
 export const useImu = (isConnected: boolean) => {
-  const [pitch, setPitch] = useState<number>(0);
-  const [roll, setRoll] = useState<number>(0);
+  // State for the 3D Model (Quaternion)
+  const [quaternion, setQuaternion] = useState<THREE.Quaternion>(new THREE.Quaternion());
+  
+  // State for the UI Text (Degrees)
+  const [eulerDeg, setEulerDeg] = useState({ roll: 0, pitch: 0, yaw: 0 });
 
   useEffect(() => {
-    // If the main App hasn't connected to the Pi yet, don't try to subscribe
     if (!isConnected || !rosService.ros) return;
 
-    // 1. Create the Topic object using the shared ROS connection
     const imuTopic = new Topic({
       ros: rosService.ros,
       name: '/totebot/imu',
-      messageType: 'geometry_msgs/Vector3'
+      messageType: 'sensor_msgs/Imu' 
     });
 
-    // 2. Subscribe and update React State
     imuTopic.subscribe((message: any) => {
-      // Vector3 uses x, y, z. Our Python driver sends Roll on X and Pitch on Y.
-      setRoll(message.x);
-      setPitch(message.y);
+      const qMsg = message.orientation;
+      
+      const q = new THREE.Quaternion(qMsg.x, qMsg.y, qMsg.z, qMsg.w);
+      setQuaternion(q);
+
+      const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ');
+      setEulerDeg({
+        roll: THREE.MathUtils.radToDeg(euler.x),
+        pitch: THREE.MathUtils.radToDeg(euler.y),
+        yaw: THREE.MathUtils.radToDeg(euler.z)
+      });
     });
 
-    // 3. Cleanup: Unsubscribe when the component unmounts
     return () => {
       imuTopic.unsubscribe();
     };
-  }, [isConnected]); // Re-run this effect if the connection status changes
+  }, [isConnected]);
 
-  return { pitch, roll };
+  return { quaternion, eulerDeg };
 };

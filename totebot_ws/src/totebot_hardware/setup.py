@@ -22,6 +22,7 @@ setup(
         'console_scripts': [
             'motor_driver = totebot_hardware.motor_driver:main',
             'imu_driver = totebot_hardware.imu_driver:main',
+            'basket_actuator_driver = totebot_hardware.basket_actuator_driver:main',
         ],
     },
 )

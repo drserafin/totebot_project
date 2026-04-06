@@ -1,6 +1,5 @@
 import { Ros, Topic } from 'roslib';
 
-// Define the shape of the message for better TypeScript support
 interface TwistMessage {
   linear: { x: number; y: number; z: number };
   angular: { x: number; y: number; z: number };
@@ -10,6 +9,8 @@ class RosService {
   public ros: Ros | null = null;
   
   private cmdVel: Topic | null = null;
+  private basketCmd: Topic | null = null; // 1. Declared the new topic here
+  
   private currentLinear = 0;
   private currentAngular = 0;
   private publishTimer: ReturnType<typeof setInterval> | null = null;
@@ -27,10 +28,9 @@ class RosService {
       onConnect();
     });
 
-    // Unified cleanup for errors/closing
     const handleFailure = () => {
       this.stopPublishLoop();
-      this.resetVelocity(); // Reset memory so robot doesn't "jump" on reconnect
+      this.resetVelocity();
       onError();
     };
 
@@ -40,11 +40,25 @@ class RosService {
 
   private initTopics() {
     if (!this.ros) return;
+    
     this.cmdVel = new Topic({
       ros: this.ros,
       name: '/cmd_vel',
       messageType: 'geometry_msgs/Twist'
     });
+
+    // 2. Safely moved the initialization inside the initTopics function
+    this.basketCmd = new Topic({
+      ros: this.ros,
+      name: '/totebot/basket_cmd', // Matches the Python backend
+      messageType: 'std_msgs/Int8'
+    });
+  }
+
+  // 3. Added the function that the React slider will call
+  setBasketState(state: number) {
+    if (!this.basketCmd) return;
+    this.basketCmd.publish({ data: state });
   }
 
   setVelocity(linearX: number, angularZ: number) {
@@ -84,6 +98,7 @@ class RosService {
     this.ros?.close();
     this.ros = null;
     this.cmdVel = null;
+    this.basketCmd = null; // Clean up on disconnect
   }
 }
 
