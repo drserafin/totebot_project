@@ -36,7 +36,7 @@ class MotoronRosDriver(Node):
         
         # 🟢 DECLARE ROS 2 PARAMETERS
         self.declare_parameter('dummy_mode', False)
-        self.declare_parameter('max_speed', 600)       # Standard: 600, Max: 800
+        self.declare_parameter('max_speed', 800)       # Max: 800
         self.declare_parameter('accel_limit', 140)     # Lower = smoother
         self.declare_parameter('decel_limit', 300)     # Lower = longer braking
         self.declare_parameter('cmd_timeout_ms', 200)  # Stop if signal lost

@@ -79,7 +79,7 @@ class RosService {
 
       const twist: TwistMessage = {
         linear: { x: this.currentLinear, y: 0, z: 0 },
-        angular: { x: 0, y: 0, z: -this.currentAngular } 
+        angular: { x: 0, y: 0, z: this.currentAngular } 
       };
 
       this.cmdVel.publish(twist);

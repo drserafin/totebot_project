@@ -18,11 +18,14 @@ setup(
     description='Hardware drivers for ToteBot',
     license='MIT',
     tests_require=['pytest'],
-    entry_points={
+   entry_points={
         'console_scripts': [
             'motor_driver = totebot_hardware.motor_driver:main',
             'imu_driver = totebot_hardware.imu_driver:main',
             'basket_actuator_driver = totebot_hardware.basket_actuator_driver:main',
+            'lift_actuator_driver = totebot_hardware.lift_actuator_driver:main',
+            'micro_ros_bridge = totebot_hardware.micro_ros_bridge:main',
+            'lifter_controller = totebot_hardware.lifter_controller:main'
         ],
     },
 )

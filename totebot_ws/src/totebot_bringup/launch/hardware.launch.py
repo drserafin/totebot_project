@@ -53,13 +53,13 @@ def generate_launch_description():
 
         # 🟢 3. BASKET ACTUATOR (The Lift)
         # Connects to the second Motoron hat for the linear actuator
-        Node(
-            package='totebot_hardware',
-            executable='basket_actuator_driver',
-            name='basket_actuator',
-            output='screen',
-            emulate_tty=True
-        ),
+        #Node(
+        #    package='totebot_hardware',
+        #    executable='basket_actuator_driver',
+        #    name='basket_actuator',
+        #    output='screen',
+        #    emulate_tty=True
+        #),
 
         # 🟢 4. ROSBRIDGE (The Web Link)
         Node(
