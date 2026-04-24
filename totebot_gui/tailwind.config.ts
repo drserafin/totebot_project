@@ -62,16 +62,17 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+        // THE FIX: Adding / <alpha-value> allows Tailwind to parse opacities properly
         hud: {
-          green: "hsl(var(--hud-green))",
-          "green-dim": "hsl(var(--hud-green-dim))",
-          red: "hsl(var(--hud-red))",
-          amber: "hsl(var(--hud-amber))",
-          cyan: "hsl(var(--hud-cyan))",
+          green: "hsl(var(--hud-green) / <alpha-value>)",
+          "green-dim": "hsl(var(--hud-green-dim) / <alpha-value>)",
+          red: "hsl(var(--hud-red) / <alpha-value>)",
+          amber: "hsl(var(--hud-amber) / <alpha-value>)",
+          cyan: "hsl(var(--hud-cyan) / <alpha-value>)",
         },
         surface: {
-          dark: "hsl(var(--surface-dark))",
-          panel: "hsl(var(--surface-panel))",
+          dark: "hsl(var(--surface-dark) / <alpha-value>)",
+          panel: "hsl(var(--surface-panel) / <alpha-value>)",
         },
       },
       borderRadius: {

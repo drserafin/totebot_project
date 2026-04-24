@@ -1,168 +1,189 @@
-import sys
-import select
-import tty
-import termios
-import threading
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32 
+from std_msgs.msg import Int32, Int32MultiArray
 from . import motoron
-# =====================================================================
-# 🚀 TOTEBOT LIFTER PID TEST (Docker Safe)
-# Run command inside container: 
-# colcon build --packages-select totebot_hardware
-# source install/setup.bash
-# ros2 run totebot_hardware lifter_controller
-# =====================================================================
+import time
 
-class LifterPIDController(Node):
+SOFT_LIMIT_TICKS    = 999999
+RETRACT_LIMIT_TICKS = 0
+MOTOR_SPEED         = 800
+STALL_MA            = 2000
+ENCODER_TIMEOUT_SEC = 2.0  # if no encoder data for 2s → open loop mode
+
+
+class LifterController(Node):
     def __init__(self):
-        super().__init__('lifter_pid_controller')
-        
-        # --- 1. PID Tuning & Targets ---
-        self.target_position = 0  
+        super().__init__('lifter_controller')
+
         self.current_position = 0
-        self.Kp = 0.5   
-        self.Ki = 0.0   
-        self.Kd = 0.1   
+        self.command = 0
+        self.mc = None
+        self.current_units = None
+        self.ready = False
+        self.current_speed = 0
 
-        self.prev_error = 0
-        self.integral_sum = 0
-        self.tolerance = 15  
+        # Tracks when we last got encoder data
+        self.last_encoder_time = None
+        self.encoder_online = False
 
-        # --- 2. Motoron Initialization (From your driver) ---
-        self.mc = motoron.MotoronI2C()
-        self.stall_threshold_ma = 2000  # 2 Amp limit for lifting mechanism
-        self.reference_mv = 3300 
-        self.vin_type = motoron.VinSenseType.MOTORON_256
-        
-        # The "No-Panic" Mask
-        self.error_mask = (
-            (1 << motoron.STATUS_FLAG_PROTOCOL_ERROR) |
-            (1 << motoron.STATUS_FLAG_CRC_ERROR) |
-            (1 << motoron.STATUS_FLAG_COMMAND_TIMEOUT))
+        self.init_timer = self.create_timer(2.0, self.try_motoron_init)
 
-        self.setup_motoron()
+        self.create_subscription(
+            Int32MultiArray, '/encoder_array', self.encoder_callback, 10)
 
-        # --- 3. Start Listening to the ESP32 ---
-        self.subscription = self.create_subscription(
-            Int32,
-            'encoder_ticks',
-            self.pid_loop_callback,
-            10)
-        
-        self.get_logger().info("Lifter PID Online. Waiting for ticks...")
+        self.create_subscription(
+            Int32, '/lifter_cmd', self.cmd_callback, 10)
 
-    def setup_motoron(self):
-        self.mc.reinitialize()
-        self.mc.clear_reset_flag()
-        self.mc.clear_latched_status_flags(0xFFFF) 
-        self.mc.clear_motor_fault()
+        self.ticks_pub = self.create_publisher(Int32, '/encoder_ticks', 10)
 
-        self.mc.set_error_response(motoron.ERROR_RESPONSE_COAST)
-        self.mc.set_error_mask(self.error_mask)
-        self.mc.set_command_timeout_milliseconds(200)
-        self.mc.set_max_acceleration(1, 140)
-        self.mc.set_max_deceleration(1, 300)
-        
-        while self.mc.get_motor_driving_flag(): pass
-        self.mc.clear_motor_fault()
+        # 10Hz — drives motor + checks encoder timeout
+        self.create_timer(0.1, self.motor_heartbeat)
 
-        self.board_type = motoron.CurrentSenseType.MOTORON_18V20
-        self.current_units = motoron.current_sense_units_milliamps(self.board_type, self.reference_mv)
+        self.get_logger().info("Lifter Controller starting — waiting for Motoron 0x11 CH2...")
 
-    def set_target(self, new_target):
-        if self.target_position != new_target:
-            self.target_position = new_target
-            self.integral_sum = 0 # Reset integral windup on new command
-            # Clear line and print new target
-            sys.stdout.write("\033[K") 
-            print(f"\r🎯 Target Updated: {self.target_position}")
+    def try_motoron_init(self):
+        try:
+            time.sleep(0.5)
+            self.mc = motoron.MotoronI2C(address=0x11)
+            self.mc.set_max_acceleration(2, 140)
+            self.mc.set_max_deceleration(2, 300)
+            self.board_type = motoron.CurrentSenseType.MOTORON_18V20
+            self.reference_mv = 3300
+            self.current_units = motoron.current_sense_units_milliamps(
+                self.board_type, self.reference_mv)
+            self.ready = True
+            self.init_timer.cancel()
+            self.get_logger().info(
+                f"✅ GoTubes Lifter Ready (Motoron 0x11 CH2) | "
+                f"Soft limit: {SOFT_LIMIT_TICKS} ticks "
+                f"({SOFT_LIMIT_TICKS / 5281:.2f} rot)"
+            )
+        except Exception as e:
+            self.get_logger().warn(f"⏳ Motoron init retry — {e}")
 
-    def emergency_brake(self):
-        self.target_position = self.current_position
-        self.mc.set_speed(1, 0)
-        sys.stdout.write("\033[K") 
-        print("\r🛑 E-BRAKE: Target locked to current position.")
-
-    def pid_loop_callback(self, msg):
-        self.current_position = msg.data
-
-        # --- Safety First: Read Current ---
-        processed_reading = self.mc.get_current_sense_processed(1)
-        current_ma = processed_reading * self.current_units
-
-        if current_ma > self.stall_threshold_ma:
-            self.mc.set_speed(1, 0)
-            self.target_position = self.current_position 
-            sys.stdout.write("\033[K")
-            print(f"\r⚠️ LIMIT REACHED! {round(current_ma)} mA. Motor Killed.")
+    def cmd_callback(self, msg: Int32):
+        if not self.ready:
+            self.get_logger().warn("GoTubes not ready yet — command ignored")
             return
 
-        # --- The PID Math ---
-        error = self.target_position - self.current_position
+        self.command = int(msg.data)
+        direction = {1: "EXTEND", -1: "RETRACT", 0: "STOP"}.get(self.command, "?")
+        mode = "📡 w/ encoder" if self.encoder_online else "⚠️  OPEN LOOP (no ESP32)"
+        self.get_logger().info(f"🔧 GoTubes: {direction} {mode}")
 
-        if abs(error) <= self.tolerance:
-            self.mc.set_speed(1, 0)
+        if self.command == 1:
+            self.current_speed = MOTOR_SPEED
+        elif self.command == -1:
+            self.current_speed = -MOTOR_SPEED
+        else:
+            self.current_speed = 0
+
+    def motor_heartbeat(self):
+        """
+        10Hz — drives motor unconditionally.
+        Also checks if encoder has timed out and switches mode accordingly.
+        """
+        if not self.ready:
             return
 
-        p_term = self.Kp * error
-        self.integral_sum += error
-        i_term = self.Ki * self.integral_sum
-        d_term = self.Kd * (error - self.prev_error)
+        # ── Check encoder timeout ─────────────────────────────────────
+        if self.last_encoder_time is not None:
+            elapsed = self.get_clock().now().nanoseconds / 1e9 - self.last_encoder_time
+            was_online = self.encoder_online
+            self.encoder_online = elapsed < ENCODER_TIMEOUT_SEC
 
-        raw_speed = int(p_term + i_term + d_term)
-        motor_speed = max(-800, min(800, raw_speed))
+            # Log mode transitions
+            if was_online and not self.encoder_online:
+                self.get_logger().warn(
+                    "⚠️  ESP32 disconnected — running OPEN LOOP, soft limits disabled")
+            elif not was_online and self.encoder_online:
+                self.get_logger().info(
+                    "📡 ESP32 reconnected — soft limits active")
 
-        self.mc.set_speed(1, motor_speed)
-        self.prev_error = error
+        # ── Drive motor regardless of encoder state ───────────────────
+        try:
+            self.mc.set_speed(2, self.current_speed)
+        except Exception as e:
+            self.get_logger().warn(f"heartbeat error: {e}")
 
-        # Live terminal update
-        sys.stdout.write(f"\rPos: {self.current_position} | Tgt: {self.target_position} | Spd: {motor_speed} | mA: {round(current_ma)}   ")
-        sys.stdout.flush()
+    def encoder_callback(self, msg: Int32MultiArray):
+        """
+        Only used for limits + tick display.
+        Motor runs from heartbeat so this being absent doesn't stop movement.
+        """
+        if len(msg.data) < 3:
+            return
 
-# =====================================================================
-# ⌨️ DOCKER-SAFE KEYBOARD THREAD
-# =====================================================================
-def keyboard_loop(node):
-    settings = termios.tcgetattr(sys.stdin)
-    print("\n--- LIFTER PID TEST ---")
-    print("[w] : Deloy (Target: 5281)")
-    print("[s] : Restract (Target: 0)")
-    print("[SPACE] : Emergency Brake")
-    print("[q] : Quit\n")
-    
-    try:
-        tty.setraw(sys.stdin.fileno())
-        while rclpy.ok():
-            # Non-blocking read
-            rlist, _, _ = select.select([sys.stdin], [], [], 0.1)
-            if rlist:
-                key = sys.stdin.read(1)
-                if key == 'w':
-                    node.set_target(5281)
-                elif key == 's':
-                    node.set_target(0)
-                elif key == ' ':
-                    node.emergency_brake()
-                elif key == 'q' or key == '\x03': # q or Ctrl+C
-                    break
-    finally:
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
-        node.mc.set_speed(1, 0)
-        rclpy.shutdown()
+        # Mark encoder as alive
+        self.last_encoder_time = self.get_clock().now().nanoseconds / 1e9
+        self.encoder_online = True
+
+        self.current_position = msg.data[2]
+
+        # Publish ticks for web dashboard
+        out = Int32()
+        out.data = self.current_position
+        self.ticks_pub.publish(out)
+
+        if not self.ready or self.current_speed == 0:
+            return
+
+        # Stall detection
+        try:
+            current_ma = self.mc.get_current_sense_processed(2) * self.current_units
+            if current_ma > STALL_MA:
+                self.current_speed = 0
+                self.command = 0
+                self.get_logger().warn(f"⚠️  STALL: {round(current_ma)} mA — killed")
+                return
+        except Exception:
+            pass
+
+        # Soft limit — only enforced when encoder is online
+        if self.current_speed > 0 and self.current_position >= SOFT_LIMIT_TICKS:
+            self.current_speed = 0
+            self.command = 0
+            self.get_logger().info(
+                f"🛑 EXTEND LIMIT: {self.current_position} ticks "
+                f"({self.current_position / 5281:.2f} rot)"
+            )
+            return
+
+        # Home limit
+        if self.current_speed < 0 and self.current_position <= RETRACT_LIMIT_TICKS:
+            self.current_speed = 0
+            self.command = 0
+            self.get_logger().info(f"🏠 HOME: {self.current_position} ticks")
+            return
+
+    def stop_motor(self):
+        self.current_speed = 0
+        try:
+            if self.mc:
+                self.mc.set_speed(2, 0)
+        except Exception as e:
+            self.get_logger().warn(f"stop_motor failed: {e}")
+
+    def destroy_node(self):
+        try:
+            self.stop_motor()
+            self.get_logger().info("🛑 Safety stop on shutdown")
+        except Exception:
+            pass
+        super().destroy_node()
+
 
 def main(args=None):
     rclpy.init(args=args)
-    node = LifterPIDController()
-    
-    # Run ROS spin in the background, keep keyboard in the main thread
-    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
-    spin_thread.start()
+    node = LifterController()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
-    keyboard_loop(node)
-
-    node.destroy_node()
 
 if __name__ == '__main__':
     main()

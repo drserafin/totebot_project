@@ -14,18 +14,20 @@ setup(
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='Kevin Serafin',
-    maintainer_email='kevin@example.com', # You can update this
+    maintainer_email='kevin@example.com',
     description='Hardware drivers for ToteBot',
     license='MIT',
     tests_require=['pytest'],
-   entry_points={
+    entry_points={
         'console_scripts': [
-            'motor_driver = totebot_hardware.motor_driver:main',
+            'open_loop_motor_driver = totebot_hardware.open_loop_motor_driver:main',
             'imu_driver = totebot_hardware.imu_driver:main',
             'basket_actuator_driver = totebot_hardware.basket_actuator_driver:main',
             'lift_actuator_driver = totebot_hardware.lift_actuator_driver:main',
             'micro_ros_bridge = totebot_hardware.micro_ros_bridge:main',
-            'lifter_controller = totebot_hardware.lifter_controller:main'
+            'lifter_controller = totebot_hardware.lifter_controller:main',
+            'camera = totebot_hardware.camera:main',
+            'encoder_telemetry = totebot_hardware.encoder_telemetry:main',
         ],
     },
 )

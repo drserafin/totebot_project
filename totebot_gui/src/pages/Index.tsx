@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import CameraFeed from '@/components/CameraFeed';
-import MissionControls from '@/components/MissionControls';
+import AssistControls from '@/components/AssistControls';
 import MechanismControls from '@/components/MechanismControls';
 import VirtualJoystick from '@/components/VirtualJoystick';
 import { Bot } from 'lucide-react';
@@ -58,7 +58,7 @@ const Index = () => {
         <div className="w-full landscape:w-[35%] sm:w-[35%] flex flex-col gap-3 min-w-0 landscape:overflow-y-auto sm:overflow-y-auto pr-1">
   
           {/* Note: Pass isConnected down to MissionControls later when you add the IMU! */}
-          <MissionControls /> 
+          <AssistControls /> 
           
           <MechanismControls />
 
