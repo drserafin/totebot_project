@@ -21,7 +21,7 @@ class MotoronRosDriver(Node):
         self.declare_parameter('max_speed', 800)       # Max: 800
         self.declare_parameter('accel_limit', 140)     # Lower = smoother
         self.declare_parameter('decel_limit', 300)     # Lower = longer braking
-        self.declare_parameter('cmd_timeout_ms', 100)  # Stop if signal lost
+        self.declare_parameter('cmd_timeout_ms', 500)  # Stop if signal lost
         self.declare_parameter('min_vin_mv', 4500)     # 4.5V cutoff
 
         self.is_dummy_mode = self.get_parameter('dummy_mode').value

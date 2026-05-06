@@ -58,14 +58,14 @@ const MechanismControls = () => {
             className="flex flex-col items-center justify-center gap-1.5 bg-surface-dark border border-border rounded-lg py-2.5 active:bg-hud-cyan/20 active:border-hud-cyan transition-all select-none touch-none"
           >
             <ChevronsDown size={20} className={basketState === 'LOWERING' ? 'text-hud-cyan' : 'text-muted-foreground'} />
-            <span className="font-mono text-[11px] font-bold text-muted-foreground">MOVE BASKET UP</span>
+            <span className="font-mono text-[11px] font-bold text-muted-foreground">MOVE BASKET DOWN</span>
           </button>
           <button
             onPointerDown={startBasketRaise} onPointerUp={stopBasket} onPointerLeave={stopBasket}
             className="flex flex-col items-center justify-center gap-1.5 bg-surface-dark border border-border rounded-lg py-2.5 active:bg-hud-amber/20 active:border-hud-amber transition-all select-none touch-none"
           >
             <ChevronsUp size={20} className={basketState === 'RAISING' ? 'text-hud-amber' : 'text-muted-foreground'} />
-            <span className="font-mono text-[11px] font-bold text-muted-foreground">MOVE BASKET DOWN</span>
+            <span className="font-mono text-[11px] font-bold text-muted-foreground">MOVE BASKET UP</span>
           </button>
         </div>
       </div>

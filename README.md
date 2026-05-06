@@ -17,6 +17,9 @@ colcon build --symlink-install
 source install/setup.bash
 ros2 launch totebot_bringup hardware.launch.py
 
+# Debugging Commands (joystick movements)
+
+ros2 topic echo /cmd_vel/joy 
 
 docker run -it --rm \
   --privileged \

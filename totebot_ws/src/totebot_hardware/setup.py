@@ -28,6 +28,7 @@ setup(
             'lifter_controller = totebot_hardware.lifter_controller:main',
             'camera = totebot_hardware.camera:main',
             'encoder_telemetry = totebot_hardware.encoder_telemetry:main',
+            'control_mux_node = totebot_hardware.control_mux_node:main',
         ],
     },
 )
