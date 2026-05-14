@@ -72,6 +72,7 @@ def generate_launch_description():
         parameters=[{'port': 9909}],
         output='screen'
     )
+    
 
     # -----------------------------------------------------------------
     # HEAVY SENSOR NODES (Delayed 5s to prevent I2C/Serial choking)
@@ -100,12 +101,12 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        # imu_node,
+        imu_node,
         encoder_telemetry_node,
         control_mux_node,
         open_loop_motor_driver_node,
-        # basket_actuator_node,
+        basket_actuator_node,
         lifter_controller_node,
         rosbridge_node,
-        #delayed_camera_nodes,
+        delayed_camera_nodes,
     ])

@@ -8,7 +8,6 @@
 # Run these on the Raspberry Pi Host
 docker start totebot_brain
 docker exec -it totebot_brain bash
-
 # 2. Workspace Preparation
 
 cd /totebot_ws/totebot_ws
@@ -17,9 +16,16 @@ colcon build --symlink-install
 source install/setup.bash
 ros2 launch totebot_bringup hardware.launch.py
 
+# running live graph
+export DISPLAY=:0
+ros2 run totebot_hardware totebot_live_plot
+
+
 # Debugging Commands (joystick movements)
 
 ros2 topic echo /cmd_vel/joy 
+
+# Running USB Serial ROS 2 bridge
 
 docker run -it --rm \
   --privileged \

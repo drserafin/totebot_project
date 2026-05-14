@@ -29,6 +29,7 @@ setup(
             'camera = totebot_hardware.camera:main',
             'encoder_telemetry = totebot_hardware.encoder_telemetry:main',
             'control_mux_node = totebot_hardware.control_mux_node:main',
+            'totebot_live_plot = totebot_hardware.totebot_live_plot:main',
         ],
     },
 )

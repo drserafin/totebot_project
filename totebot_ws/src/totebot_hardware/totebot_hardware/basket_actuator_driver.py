@@ -4,6 +4,9 @@ from std_msgs.msg import Int8, Bool
 from sensor_msgs.msg import Imu
 import math
 from . import motoron
+from threading import Lock
+
+i2c_lock = Lock()
 
 # =====================================================================
 # 🧽 TOTEBOT BASKET ACTUATOR (with IMU Fusion & Status Feedback)
@@ -18,16 +21,16 @@ class BasketActuatorDriver(Node):
         self.fusion_active = False
         self.manual_speed = 0
         self.current_pitch = 0.0
-        self.DEADZONE = 1.0  # degrees
+        self.DEADZONE = 1.5  # degrees
         self.debug_tick = 0 
 
         try:
-            self.mc = motoron.MotoronI2C(address=0x11)  
+            self.mc = motoron.MotoronI2C(address=0x10)  
             self.mc.reinitialize()
             self.mc.clear_reset_flag()
             self.mc.set_max_acceleration(1, 400)  
             self.mc.set_max_deceleration(1, 800)  
-            self.get_logger().info("✅ BASKET HARDWARE INITIALIZED (Motoron 0x11 CH1)")
+            self.get_logger().info("✅ BASKET HARDWARE INITIALIZED (Motoron 0x10 CH1)")
         except Exception as e:
             self.get_logger().error(f"❌ Motoron init failed: {e}")
             raise
@@ -80,10 +83,10 @@ class BasketActuatorDriver(Node):
         if self.fusion_active:
             # --- AUTO-LEVELING MODE ---
             if self.current_pitch > self.DEADZONE:
-                target_speed = -800  # Retract
+                target_speed = 200  # Retract
                 mode_label = "WORKING (Leveling Up)"
             elif self.current_pitch < -self.DEADZONE:
-                target_speed = 800   # Extend
+                target_speed = -200   # Extend
                 mode_label = "WORKING (Leveling Down)"
             else:
                 target_speed = 0     # Already Level
@@ -103,7 +106,7 @@ class BasketActuatorDriver(Node):
         try:
             self.mc.set_speed(1, target_speed)
         except Exception:
-            pass
+            self.get_logger().error(f"⚠️ I2C WRITE FAILED: {e}")
 
     def destroy_node(self):
         try:

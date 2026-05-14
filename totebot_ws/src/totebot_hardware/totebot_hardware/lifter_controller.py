@@ -1,100 +1,173 @@
+#!/usr/bin/env python3
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Int32
 from . import motoron
-import time
+from threading import Lock
+
+# ─────────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────────
+i2c_lock = Lock()
 
 MOTOR_SPEED = 800
-STALL_MA    = 6000 # Safety: Still stops if motor pulls too much current
 
+STALL_MA = 6000
+STALL_CONFIRM_COUNT = 5   # ~0.5s at 10Hz
+
+UPDATE_RATE = 0.1         # 10 Hz
+
+# ─────────────────────────────────────────────
+# NODE
+# ─────────────────────────────────────────────
 class LifterController(Node):
+
     def __init__(self):
         super().__init__('lifter_controller')
 
         self.mc = None
         self.ready = False
-        self.current_speed = 0
-        self.current_units = None
 
-        # Attempt to find the Motoron at 0x11
+        self.current_speed = 0
+
+        # safety filtering
+        self.filtered_current = 0.0
+        self.stall_counter = 0
+
+        # init retry timer
         self.init_timer = self.create_timer(2.0, self.try_motoron_init)
 
-        # Listen for movement commands (1, -1, 0)
+        # command input
         self.create_subscription(Int32, '/lifter_cmd', self.cmd_callback, 10)
 
-        # 10Hz Heartbeat to keep the motor driver alive
-        self.create_timer(0.1, self.motor_heartbeat)
+        # heartbeat
+        self.create_timer(UPDATE_RATE, self.motor_heartbeat)
 
-        self.get_logger().info("🚀 Pure Open-Loop Controller: Targeting Motoron 0x11 CH2")
+        self.get_logger().info("🚀 Lifter Controller Ready (Safe Mode)")
 
+    # ─────────────────────────────────────────────
+    # INIT MOTORON (RETRY SAFE)
+    # ─────────────────────────────────────────────
     def try_motoron_init(self):
+        if self.ready:
+            return
+
         try:
-            self.mc = motoron.MotoronI2C(address=0x11)
-            self.mc.reinitialize()
-            self.mc.disable_crc()
-            self.mc.clear_reset_flag()
-            self.mc.set_max_acceleration(2, 140)
-            self.mc.set_max_deceleration(2, 300)
-            
-            # Setup current sensing for stall protection
-            self.board_type = motoron.CurrentSenseType.MOTORON_18V20
-            self.reference_mv = 3300
-            self.current_units = motoron.current_sense_units_milliamps(
-                self.board_type, self.reference_mv)
-            
+            with i2c_lock:
+                self.mc = motoron.MotoronI2C(address=0x10)
+                self.mc.reinitialize()
+                self.mc.disable_crc()
+                self.mc.clear_reset_flag()
+
+                self.mc.set_max_acceleration(2, 140)
+                self.mc.set_max_deceleration(2, 300)
+
             self.ready = True
             self.init_timer.cancel()
-            self.get_logger().info("✅ Motoron 0x11 CH2 Initialized. Ready for commands.")
-        except Exception as e:
-            self.get_logger().warn(f"⏳ Motoron 0x11 not found, retrying... ({e})")
 
+            self.get_logger().info("✅ Motoron initialized safely")
+
+        except Exception as e:
+            self.get_logger().warn(f"Motoron init retry: {e}")
+
+    # ─────────────────────────────────────────────
+    # COMMANDS
+    # ─────────────────────────────────────────────
     def cmd_callback(self, msg: Int32):
+
         if not self.ready:
             return
 
-        cmd = int(msg.data)
-        if cmd == 1:
+        if msg.data == 1:
             self.current_speed = MOTOR_SPEED
-            self.get_logger().info("🔧 Action: EXTENDING")
-        elif cmd == -1:
+        elif msg.data == -1:
             self.current_speed = -MOTOR_SPEED
-            self.get_logger().info("🔧 Action: RETRACTING")
         else:
             self.current_speed = 0
-            self.get_logger().info("🔧 Action: STOP")
 
+    # ─────────────────────────────────────────────
+    # HEARTBEAT + SAFETY LOOP
+    # ─────────────────────────────────────────────
     def motor_heartbeat(self):
+
         if not self.ready:
             return
 
         try:
-            # Check for physical stall using Motoron's internal current sense
-            current_ma = self.mc.get_current_sense_processed(2) * self.current_units
-            if current_ma > STALL_MA:
-                self.current_speed = 0
-                self.get_logger().error(f"❌ STALL DETECTED ({round(current_ma)} mA). Safety Stop.")
-            
-            # Push speed to hardware
-            self.mc.set_speed(2, self.current_speed)
-            
-        except Exception as e:
-            self.get_logger().error(f"Hardware Error on 0x11: {e}")
+            with i2c_lock:
 
+                # ── READ CURRENT (SAFE) ──
+                try:
+                    raw_current = self.mc.get_current_sense_processed(2)
+                except Exception:
+                    self.get_logger().warn("I2C read failed (skipping)")
+                    return
+
+                # ── FILTER SPIKES ──
+                if raw_current < 0 or raw_current > 20000:
+                    self.get_logger().warn(f"Bad current ignored: {raw_current}")
+                    return
+
+                # exponential smoothing
+                self.filtered_current = (
+                    0.8 * self.filtered_current +
+                    0.2 * raw_current
+                )
+
+                # ── STALL DETECTION (STABLE) ──
+                if self.filtered_current > STALL_MA:
+                    self.stall_counter += 1
+                else:
+                    self.stall_counter = 0
+
+                if self.stall_counter >= STALL_CONFIRM_COUNT:
+                    self.current_speed = 0
+                    self.get_logger().error(
+                        f"STALL CONFIRMED → STOP ({int(self.filtered_current)} mA)"
+                    )
+                else:
+                    # normal operation
+                    self.mc.set_speed(2, self.current_speed)
+
+        except Exception as e:
+            self.get_logger().error(f"I2C ERROR (non-fatal): {e}")
+            self.ready = False  # allow re-init instead of crash
+
+    # ─────────────────────────────────────────────
+    # CLEAN SHUTDOWN
+    # ─────────────────────────────────────────────
     def destroy_node(self):
+
         if self.mc:
             try:
-                self.mc.set_speed(2, 0) # Emergency stop on exit
+                self.mc.set_speed(2, 0)
             except:
                 pass
+
         super().destroy_node()
 
+
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
 def main(args=None):
     rclpy.init(args=args)
+
     node = LifterController()
+
     try:
         rclpy.spin(node)
+
     except KeyboardInterrupt:
         pass
+
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
